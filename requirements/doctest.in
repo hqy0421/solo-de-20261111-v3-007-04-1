@@ -1,0 +1,6 @@
+orjson
+requests
+numpy
+ydata-profiling
+pandas
+pandas-stubs

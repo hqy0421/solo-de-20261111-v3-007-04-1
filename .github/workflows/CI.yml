@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - ".github/ISSUE_TEMPLATE/**"
+  pull_request: {}
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  repo-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: "0.11.11"
+          python-version: "3.12"
+          activate-environment: true
+          venv-path: venv
+      - uses: extractions/setup-just@v4
+      # Need this because we're running `cargo clippy` and `fmt`
+      # directly.
+      - uses: dsherret/rust-toolchain-file@v1
+      - name: Install cbfmt
+        run: |
+            mkdir /tmp/cbfmt && cd $_
+            curl -fsSL -o cbfmt.tar.gz "https://github.com/lukas-reineke/cbfmt/releases/download/v0.2.0/cbfmt_linux-x86_64_v0.2.0.tar.gz"
+            tar --strip-components 1 -xvf cbfmt.tar.gz
+            mv cbfmt /usr/local/bin/
+      - name: Prep venv
+        shell: bash
+        run: uv pip sync --strict requirements/dev.txt
+      - name: Check pre-commit hooks
+        shell: bash
+        run: just lint-pc
+      - name: Run lints
+        shell: bash
+        run: just lint
+      - name: Run Rust tests
+        shell: bash
+        # The Rust test binary links libpython. When the runner has no
+        # system Python 3.12 (ubuntu-26.04), setup-uv installs uv's
+        # Python, whose libpython isn't on the loader's search path.
+        run: |
+          export LD_LIBRARY_PATH="$(python -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')"
+          just test-rs
+      - name: Run documentation tests
+        shell: bash
+        run: just test-doc
+
+  build-wheels:
+    uses: ./.github/workflows/build-wheels.yml
+    secrets: inherit
+    with:
+      run-tests: true
