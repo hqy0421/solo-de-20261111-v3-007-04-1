@@ -9,6 +9,18 @@ For help with updating to new Bytewax versions, please see the
 __Add any extra change notes here and we'll put them in the release
 notes on GitHub when we make a new release.__
 
+- Adds the `bytewax.operators.interval_join.interval_join` operator,
+  an event-time interval join of two keyed streams. A left record at
+  timestamp `t_l` matches every right record of the same key in
+  `[t_l + lower_bound, t_l + upper_bound]`, so matches that straddle a
+  fixed window boundary are no longer missed. Each side advances its
+  own watermark with a configurable out-of-order tolerance and optional
+  idleness timeout; late records are emitted on a separate `late`
+  stream. A left outer join emits an unmatched left record only after
+  the right watermark passes its interval end. All state is
+  snapshotted for exactly-once recovery and reclaimed once it can no
+  longer match.
+
 - Adds `bytewax.__version__`, exposing the installed package version
   from Python code, e.g. when sanity-checking an environment or
   reporting a bug. It is read from the package metadata, so importing

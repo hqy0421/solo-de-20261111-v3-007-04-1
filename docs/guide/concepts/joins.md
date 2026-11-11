@@ -638,6 +638,95 @@ You will have to decide in a downstream step how to handle these
 `None` values so you can focus only on the running list of complete
 updates, or fill in default values, etc.
 
+(xref-interval-joins)=
+## Interval Joins
+
+A windowed join only matches records that land in the same window.
+For attribution-style problems you instead want to match a record on
+one stream with records on the other stream whose event time falls in
+a relative interval. For example, a conversion should be attributed to
+a click if it happens anywhere from 0 to 30 minutes after that click,
+regardless of where a fixed window boundary falls. A fixed window can
+miss a valid pair that straddles two windows.
+
+{py:obj}`~bytewax.operators.interval_join.interval_join` joins two
+keyed streams on an event-time interval. A left record with timestamp
+`t_l` matches every right record of the same key whose timestamp `t_r`
+satisfies `t_l + lower_bound <= t_r <= t_l + upper_bound`. The bounds
+are inclusive and `lower_bound` may be negative. When several records
+exist on either side, every satisfying pair is emitted (an all-to-all
+match), each exactly once.
+
+Each side maintains its own event-time watermark. It is the largest
+event timestamp seen on that side minus a configurable out-of-order
+tolerance. Records that arrive behind their side's watermark are
+emitted on the separate `late` stream and never participate in
+matching, so late data is never silently dropped. A side can also be
+marked idle after a configurable timeout; its watermark then advances
+with system time so a quiet side cannot hold back results forever.
+
+In a left outer join (the default), an unmatched left record is only
+emitted once the *right* watermark has passed the end of its interval.
+That ordering guarantees an outer row can never be produced before
+every right record that could have matched it has already had to
+arrive.
+
+```{testcode}
+from datetime import datetime, timedelta, timezone
+from bytewax.operators.interval_join import interval_join
+
+align = datetime(2024, 1, 1, tzinfo=timezone.utc)
+def at(minute):
+    return align + timedelta(minutes=minute)
+
+flow = Dataflow("attribution")
+clicks = op.input(
+    "clicks",
+    flow,
+    TestingSource([("user1", ("click", at(0))), ("user2", ("click", at(5)))]),
+)
+conversions = op.input(
+    "conversions",
+    flow,
+    TestingSource([("user1", ("conv", at(20))), ("user2", ("conv", at(50)))]),
+)
+
+joined = interval_join(
+    "attribute",
+    clicks,
+    conversions,
+    left_ts_getter=lambda event: event[1],
+    right_ts_getter=lambda event: event[1],
+    lower_bound=timedelta(0),
+    upper_bound=timedelta(minutes=30),
+    # Freeze system time in the test so watermarks move only on events.
+    now_getter=lambda: align,
+)
+op.inspect("matched", joined.matched)
+op.inspect("unmatched", joined.unmatched_left)
+```
+
+```{testcode}
+:hide:
+
+from bytewax.testing import run_main
+
+run_main(flow)
+```
+
+```{testoutput}
+attribution.matched: ('user1', (('click', datetime.datetime(2024, 1, 1, 0, 0, tzinfo=datetime.timezone.utc)), ('conv', datetime.datetime(2024, 1, 1, 0, 20, tzinfo=datetime.timezone.utc))))
+attribution.unmatched: ('user2', (('click', datetime.datetime(2024, 1, 1, 0, 5, tzinfo=datetime.timezone.utc)), None))
+```
+
+The first user's conversion 20 minutes after their click is matched,
+while the second user's conversion arrives 45 minutes after their
+click (outside the 30 minute interval) so the click is reported as
+unmatched. State for a record is reclaimed as soon as the opposing
+side's watermark proves no further match is possible, and all
+watermark and buffer state is snapshotted so recovery produces the
+same matches without duplicates.
+
 ## Product Joins
 
 Bytewax has another windowing join mode called the **product join**.
